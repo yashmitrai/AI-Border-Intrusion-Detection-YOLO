@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Intrusion Detection Command Centre - TACTICAL V3</title>
+    <style>
+        body {
+            background-color: #030803;
+            background-image: linear-gradient(rgba(0, 255, 0, 0.05) 1px, transparent 1px),
+                              linear-gradient(90deg, rgba(0, 255, 0, 0.05) 1px, transparent 1px);
+            background-size: 50px 50px;
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace;
+            margin: 0; padding: 0;
+            display: flex; height: 100vh; overflow: hidden;
+        }
+        
+        .sidebar {
+            width: 250px; background: rgba(0, 20, 0, 0.95);
+            border-right: 2px solid #00ff00; padding: 25px;
+            display: flex; flex-direction: column; gap: 20px;
+            box-shadow: 10px 0 30px rgba(0, 255, 0, 0.1);
+        }
+        
+        .nav-btn {
+            background: rgba(0, 255, 0, 0.05); color: #00ff00;
+            border: 1px solid #00ff00; padding: 14px;
+            cursor: pointer; text-align: left; font-size: 15px; font-weight: bold;
+            transition: all 0.2s; letter-spacing: 1px;
+        }
+        .nav-btn:hover, .nav-btn.active {
+            background: #00ff00; color: #000;
+            box-shadow: 0 0 20px #00ff00;
+        }
+        
+        .main-content { flex-grow: 1; padding: 25px; overflow-y: auto; }
+        
+        .header {
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 2px solid #00ff00; padding-bottom: 12px; margin-bottom: 25px;
+        }
+        
+        .card {
+            background: rgba(0, 30, 0, 0.7); border: 1px solid #00ff00;
+            padding: 20px; border-radius: 2px; position: relative;
+        }
+        
+        .intrusion-alert {
+            border: 2px solid #ff0033 !important;
+            box-shadow: 0 0 25px rgba(255, 0, 51, 0.5) !important;
+            color: #ff0033 !important;
+        }
+        
+        .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 25px; }
+        
+        img.video-feed {
+            width: 100%; border: 1px solid #00ff00; display: block;
+        }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border: 1px solid #00ff00; padding: 12px; text-align: left; }
+        th { background: rgba(0, 255, 0, 0.15); color: #00ff00; }
+        .row-intrusion { background: rgba(255, 0, 51, 0.1); color: #ff0033; }
+        
+        .evidence-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;
+        }
+        .evidence-item {
+            border: 1px solid #00ff00; padding: 8px; background: rgba(0, 15, 0, 0.9);
+            position: relative; transition: transform 0.2s;
+        }
+        .evidence-item img, .evidence-item video { width: 100%; height: 180px; object-fit: cover; }
+        
+        .btn-delete {
+            background: #ff0033; color: white; border: none; padding: 4px 8px; 
+            font-size: 11px; cursor: pointer; float: right; margin-top: 5px;
+            font-family: inherit; font-weight: bold;
+        }
+        .btn-delete:hover { background: #aa0022; }
+
+        #alert-banner {
+            display: none; background: #ff0033; color: white;
+            text-align: center; padding: 12px; font-size: 20px; font-weight: bold;
+            position: fixed; top: 0; left: 0; width: 100%; z-index: 1000;
+            animation: pulse-alert 0.5s infinite alternate;
+        }
+        @keyframes pulse-alert { from { opacity: 0.7; } to { opacity: 1; } }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #030803; }
+        ::-webkit-scrollbar-thumb { background: #00ff00; }
+    </style>
+</head>
+<body>
+
+<div id="alert-banner">🚨 TACTICAL ALERT: BORDER INTRUSION CONFIRMED 🚨</div>
+
+<div class="sidebar">
+    <h2 style="font-size:18px; text-align:center; border-bottom:1px solid #00ff00; padding-bottom:10px;">🛡️ HQ CONTROL</h2>
+    <button class="nav-btn active" onclick="showTab('dashboard')">📡 DASHBOARD</button>
+    <button class="nav-btn" onclick="showTab('logs')">📂 SYSTEM LOGS</button>
+    <button class="nav-btn" onclick="showTab('evidence')">📼 EVIDENCE ARCHIVE</button>
+    
+    <div style="margin-top:auto; font-size:13px; border-top:1px solid #00ff00; padding-top:15px;">
+        <p>STATUS: <span id="top-camera-status" style="color:#00ff00;">ONLINE</span></p>
+        <p>REFRESH: <span style="color:#ffff00;">ASYNC LOOP</span></p>
+    </div>
+</div>
+
+<div class="main-content">
+    <div class="header">
+        <h1 style="margin:0; font-size:24px; letter-spacing:2px;">INTRUSION DETECTION COMMAND CENTRE</h1>
+        <div id="top-zone-badge" style="padding:8px 15px; border:1px solid #00ff00; font-weight:bold;">🟢 SECTOR CLEAR</div>
+    </div>
+
+    <!-- DASHBOARD VIEW -->
+    <div id="view-dashboard">
+        <div class="grid-2">
+            <div class="card" id="cam-card">
+                <h3 style="margin-top:0; font-size:16px;">📹 LIVE FEED: SEC-ALPHA</h3>
+                <img id="live-feed" class="video-feed" src="http://localhost:5050/video_feed" alt="TACTICAL LINK OFFLINE">
+            </div>
+            
+            <div class="card" id="status-card">
+                <h3 style="margin-top:0; font-size:16px;">📈 TACTICAL STATS</h3>
+                <p>STATE: <span id="status-zone" style="font-weight:bold;">SAFE</span></p>
+                <p>SCAN RATE: <span id="status-fps">0.0</span> FPS</p>
+                <p>AI ENGINE: <span style="color:#00ff00;">RUNNING</span></p>
+                <hr style="border:0; border-top:1px solid #00ff00; margin:15px 0;">
+                <div style="font-size:13px;">
+                    <p>SAFE:<span id="count-safe" style="float:right;">--</span></p>
+                    <p style="color:#ffff00;">WARN:<span id="count-warn" style="float:right;">--</span></p>
+                    <p style="color:#ff0033;">CRIT:<span id="count-crit" style="float:right;">--</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LOGS VIEW -->
+    <div id="view-logs" style="display:none;">
+        <div class="card">
+            <h3 style="margin-top:0;">📍 ARCHIVED INTRUSIONS</h3>
+            <table id="logs-table">
+                <thead>
+                    <tr>
+                        <th>TIMESTAMP</th>
+                        <th>ZONE</th>
+                        <th>CONFIDENCE</th>
+                        <th>ACTION</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- EVIDENCE VIEW -->
+    <div id="view-evidence" style="display:none;">
+        <div class="card">
+            <h3 style="margin-top:0;">📼 SECURED TACTICAL EVIDENCE</h3>
+            <div class="evidence-grid" id="evidence-container"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const ADDR = "http://localhost:5050";
+
+    function showTab(t) {
+        ['dashboard', 'logs', 'evidence'].forEach(v => document.getElementById(`view-${v}`).style.display = 'none');
+        document.getElementById(`view-${t}`).style.display = 'block';
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        event.currentTarget.classList.add('active');
+        if(t === 'logs') fetchLogs();
+        if(t === 'evidence') fetchEvidence();
+    }
+
+    async function fetchStatus() {
+        try {
+            const r = await fetch(`${ADDR}/status`);
+            const s = await r.json();
+            const rs = await fetch(`${ADDR}/stats`);
+            const stats = await rs.json();
+            
+            document.getElementById('status-fps').innerText = s.fps;
+            document.getElementById('status-zone').innerText = s.current_zone;
+            document.getElementById('count-safe').innerText = stats.safe_count;
+            document.getElementById('count-warn').innerText = stats.warning_count;
+            document.getElementById('count-crit').innerText = stats.danger_count;
+            
+            const badge = document.getElementById('top-zone-badge');
+            const alert = document.getElementById('alert-banner');
+            const cam = document.getElementById('cam-card');
+            
+            if(s.current_zone === "INTRUSION") {
+                badge.innerText = "🔴 INTRUSION DETECTED";
+                badge.style.color = "#ff0033"; badge.style.borderColor = "#ff0033";
+                alert.style.display = 'block'; cam.classList.add('intrusion-alert');
+            } else if(s.current_zone === "WARNING") {
+                badge.innerText = "🟡 WARNING CONTACT";
+                badge.style.color = "#ffff00"; badge.style.borderColor = "#ffff00";
+                alert.style.display = 'none'; cam.classList.remove('intrusion-alert');
+            } else {
+                badge.innerText = "🟢 SECTOR CLEAR";
+                badge.style.color = "#00ff00"; badge.style.borderColor = "#00ff00";
+                alert.style.display = 'none'; cam.classList.remove('intrusion-alert');
+            }
+        } catch(e) {}
+    }
+
+    async function fetchLogs() {
+        try {
+            const r = await fetch(`${ADDR}/logs`);
+            const d = await r.json();
+            let h = "";
+            d.forEach(l => {
+                h += `<tr class="${l.zone === 'CRITICAL' ? 'row-intrusion' : ''}">
+                    <td>${l.timestamp}</td>
+                    <td>${l.zone}</td>
+                    <td>${l.confidence}</td>
+                    <td><button class="btn-delete" onclick="deleteLog('${l.timestamp}')">DELETE</button></td>
+                </tr>`;
+            });
+            document.getElementById('logs-body').innerHTML = h;
+        } catch(e) {}
+    }
+
+    async function deleteLog(ts) {
+        if(!confirm("Erase classified log?")) return;
+        await fetch(`${ADDR}/delete_log`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({timestamp: ts})
+        });
+        fetchLogs();
+    }
+
+    async function fetchEvidence() {
+        try {
+            const r = await fetch(`${ADDR}/evidence`);
+            const d = await r.json();
+            let h = "";
+            d.forEach(f => {
+                let m = f.type === 'image' 
+                    ? `<img src="${ADDR}${f.url}">`
+                    : `<video src="${ADDR}${f.url}" muted></video>`;
+                h += `<div class="evidence-item" id="file-${f.filename.replace(/\./g,'_')}">
+                    <div style="cursor:pointer" onclick="window.open('${ADDR}${f.url}', '_blank')">${m}</div>
+                    <div style="font-size:11px; margin-top:5px;">
+                        ${f.filename}
+                        <button class="btn-delete" onclick="deleteFile('${f.filename}')">DELETE</button>
+                    </div>
+                </div>`;
+            });
+            document.getElementById('evidence-container').innerHTML = h;
+        } catch(e) {}
+    }
+
+    async function deleteFile(fn) {
+        if(!confirm("Destroy visual evidence?")) return;
+        await fetch(`${ADDR}/delete_evidence`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({filename: fn})
+        });
+        fetchEvidence();
+    }
+
+    setInterval(fetchStatus, 2000);
+    setInterval(() => {
+        if(document.getElementById('view-logs').style.display==='block') fetchLogs();
+        if(document.getElementById('view-evidence').style.display==='block') fetchEvidence();
+    }, 4000);
+    fetchStatus();
+</script>
+
+</body>
+</html>
