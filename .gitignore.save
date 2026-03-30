@@ -235,8 +235,6 @@ yolov8n.pt
 intrusion_log.json
 logs/
 evidence/
-evidence_archive/
-system_logs/
 __pycache__/
 *.pyc
 .env

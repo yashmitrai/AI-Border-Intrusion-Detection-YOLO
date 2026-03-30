@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
+print("🚀 Script started")
 from ultralytics import YOLO
 
 class SurveillanceEvaluator:
@@ -21,8 +22,14 @@ class SurveillanceEvaluator:
         import torch
         self.device = 0 if torch.cuda.is_available() else ('mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else 'cpu')
         
-        self.model = YOLO(model_path)
-        self.model.to(self.device)
+        print("🧠 Loading YOLO model...")
+        try:
+            self.model = YOLO(model_path, task="detect")
+            self.model.to(self.device)
+            print("✅ Model loaded successfully")
+        except Exception as e:
+            print("❌ Model loading failed:", e)
+            exit()
         self.video_source = video_source
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -48,11 +55,16 @@ class SurveillanceEvaluator:
 
     def run_experiment(self, mode=2, max_frames=300):
         print(f"\n🚀 Running Evaluation (Mode {mode}) on {max_frames} frames...")
+        
+        print("📂 Loading video...")
         cap = cv2.VideoCapture(self.video_source)
         
         if not cap.isOpened():
-            print("ERROR: Cannot open video file")
+            print("❌ ERROR: Cannot open video file")
             exit()
+            
+        print("🎥 Video loaded successfully")
+        print("🔁 Entering frame processing loop")
             
         frame_id = 0
         logs = []
@@ -68,10 +80,11 @@ class SurveillanceEvaluator:
             while cap.isOpened() and frame_id < max_frames:
                 ret, frame = cap.read()
                 if not ret:
-                    print("🎬 Video processing complete. (End of video)")
+                    print("🎬 Video processing complete")
                     break
                     
                 frame_id += 1
+                print(f"Processing frame {frame_id}")
                 start_time = time.time()
                 
                 # Resize similar to production constraints
@@ -91,6 +104,7 @@ class SurveillanceEvaluator:
                     if r.boxes:
                         for box in r.boxes:
                             cls = int(box.cls[0])
+                            
                             conf = float(box.conf[0])
                             if cls in [0, 1, 2, 3, 7] and conf > 0.5:
                                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -277,6 +291,7 @@ class SurveillanceEvaluator:
         print(f"✅ Graphs successfully saved in '{self.output_dir}/' folder.")
 
 if __name__ == "__main__":
+    print("➡️ Entering main")
     print("=== IEEE Surveillance System Evaluation Suite ===")
     
     mode = "video"  # or "webcam"
@@ -301,6 +316,8 @@ if __name__ == "__main__":
         output_dir="results",
         gt_file=None # Change this to "ground_truth.json" when labeling manually
     )
+    
+    print("🔁 Starting processing...")
     
     # --- Experiment Phase 1: Baseline system WITHOUT your intrusion zone filtering (Alerts on ALL objects) ---
     logs_mode1 = evaluator.run_experiment(mode=1, max_frames=max_evaluation_frames)

@@ -118,7 +118,7 @@
         <div class="grid-2">
             <div class="card" id="cam-card">
                 <h3 style="margin-top:0; font-size:16px;">📹 LIVE FEED: SEC-ALPHA</h3>
-                <img id="live-feed" class="video-feed" src="http://localhost:5050/video_feed" alt="TACTICAL LINK OFFLINE">
+                <img id="live-feed" class="video-feed" src="http://localhost:5050/video_feed" alt="TACTICAL LINK OFFLINE" onerror="setTimeout(() => { this.src = 'http://localhost:5050/video_feed?' + new Date().getTime(); }, 2000);">
             </div>
             
             <div class="card" id="status-card">

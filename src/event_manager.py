@@ -148,8 +148,8 @@ def handle_intrusion_event(frame, detection_data, w, h, pre_intrusion_buffer):
     print("🚨 INTRUSION EVENT TRIGGERED")
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
-    img_path = f"evidence/intrusion_{timestamp}.jpg"
-    video_path = f"evidence/intrusion_{timestamp}.mp4"
+    img_path = f"evidence_archive/intrusion_{timestamp}.jpg"
+    video_path = f"evidence_archive/intrusion_{timestamp}.mp4"
     
     image_queue.put((frame.copy(), img_path, timestamp))
     video_queue.put({

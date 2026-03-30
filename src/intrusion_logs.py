@@ -75,8 +75,8 @@ def logs_feed():
 @app.route('/evidence')
 def evidence_list():
     files = []
-    if os.path.exists('evidence'):
-        for f in sorted(os.listdir('evidence'), reverse=True):
+    if os.path.exists('evidence_archive'):
+        for f in sorted(os.listdir('evidence_archive'), reverse=True):
             if f.endswith('.jpg') or f.endswith('.mp4'):
                 files.append({
                     "filename": f,
@@ -88,7 +88,7 @@ def evidence_list():
 
 @app.route('/evidence_file/<path:filename>')
 def serve_evidence(filename):
-    return send_from_directory(os.path.join(os.getcwd(), 'evidence'), filename)
+    return send_from_directory(os.path.join(os.getcwd(), 'evidence_archive'), filename)
 
 @app.route('/delete_evidence', methods=['POST'])
 def delete_evidence():
@@ -97,7 +97,7 @@ def delete_evidence():
     if not filename:
         return jsonify({"success": False, "error": "No filename"}), 400
     
-    path = os.path.join('evidence', filename)
+    path = os.path.join('evidence_archive', filename)
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -146,11 +146,20 @@ if not os.path.exists("intrusion_log.json"):
     with open("intrusion_log.json", "w") as f:
         json.dump([], f)
 
-
+# ---------- System Logs Setup ----------
+os.makedirs("system_logs", exist_ok=True)
+def write_system_log(event, confidence, obj_type, zone, timestamp=None):
+    # Non-blocking log structure per Requirement 4
+    if timestamp is None: timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_file = "system_logs/log.txt"
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"[{timestamp}] EVENT: {event} | ZONE: {zone} | CONFIDENCE: {confidence:.2f} | TYPE: {obj_type}\n")
+    except Exception as e:
+        print(f"Log writing failed: {e}")
 
 # ---------- DB Setup ----------
 DB_FILE = "intrusion_logs.db"
-
 conn = sqlite3.connect(DB_FILE)
 cur = conn.cursor()
 
@@ -174,10 +183,18 @@ if "zone" not in columns:
     conn.commit()
 
 # ---------- Model ----------
+print("🔧 [DEBUG] Loading Torch...")
 import torch
 device = 0 if torch.cuda.is_available() else ('mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else 'cpu')
-model = YOLO("yolov8n.pt")
+print(f"🔧 [DEBUG] Torch Device: {device}")
+
+print("🔧 [DEBUG] Loading YOLO...")
+model = YOLO("src/yolov8n.pt" if os.path.exists("src/yolov8n.pt") else "yolov8n.pt")
 model.to(device)
+print("🔧 [DEBUG] YOLO Loaded.")
+
+# Dictionary of class ID to name, mostly 0=person, 2=car etc in COCO
+CLASS_NAMES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 7: "truck"}
 
 # ---------- Camera / Video Source ----------
 source = 0
@@ -186,23 +203,30 @@ if len(sys.argv) > 1:
     if isinstance(source, str) and source.isdigit():
         source = int(source)
 
-if isinstance(source, int):
-    cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
-else:
-    cap = cv2.VideoCapture(source)
+def init_camera(src):
+    # Mac compatibility cv2.CAP_AVFOUNDATION logic
+    return cv2.VideoCapture(src, cv2.CAP_AVFOUNDATION) if isinstance(src, int) else cv2.VideoCapture(src)
+
+print(f"🔧 [DEBUG] Opening VideoCapture with source: {source}")
+cap = init_camera(source)
+
+# Fallback handling for Mac indexes
+if not cap.isOpened() and isinstance(source, int):
+    print("⚠️ Camera index 0 failed. Failing back to index 1...")
+    cap = init_camera(1)
 
 if not cap.isOpened():
-    print("❌ Camera not opened. Allow camera permission or try index 1/2.")
-    exit()
+    print("❌ Camera not opened. Please check macOS Camera privacy permissions.")
+    sys.exit(1)
 
 # ---------- Evidence Folder ----------
-os.makedirs("evidence", exist_ok=True)
+# Auto-creates folder if it does not exist (Requirement 3)
+os.makedirs("evidence_archive", exist_ok=True)
 
 print("✅ Press 'q' to quit.")
 print(f"📹 Source: {source}")
 
 recording = False
-video_writer = None
 record_end_time = 0
 cooldown_end_time = 0
 last_warning_log_time = 0
@@ -216,28 +240,50 @@ zone_state_manager = state_manager.ZoneStateManager()
 while True:
     loop_start_time = time.time()
     
-    ret, frame = cap.read()
-    if not ret:
-        print("❌ Failed to read frame.")
-        break
+    # Try-catch camera loop recovery for Stability Fix
+    try:
+        ret, frame = cap.read()
+    except Exception as e:
+        print(f"❌ Read Crash: {e}. Restarting camera...")
+        cap.release()
+        time.sleep(1.0)
+        cap = init_camera(source)
+        continue
 
-
+    # Graceful handling for missing frames
+    if not ret or frame is None or frame.size == 0:
+        print("⚠️ Camera lost connection or empty frame. Restarting stream...")
+        cap.release()
+        time.sleep(1.0)
+        cap = init_camera(source)
+        continue
+        
     frame_count += 1
+    
+    try:
+        # Resize frame before YOLO explicitly specified to optimize processing
+        frame = cv2.resize(frame, (640, 480))
+    except Exception as resize_err:
+        print(f"⚠️ Frame resize error: {resize_err}")
+        continue
 
-    # Resize input frame to 512x512 for optimization
-    frame = cv2.resize(frame, (640, 480))
     raw_frame = frame
     h, w, _ = raw_frame.shape
     zone1_end = w // 3
     zone2_end = (w * 2) // 3
 
-    # Process every 2nd frame, cache otherwise
+    # Process every 2nd frame, cache otherwise (Skip frames condition implemented to maintain 30-40fps)
     if frame_count % 2 != 0:
-        # YOLO tracking (for smooth object tracking)
-        results = model.track(raw_frame, persist=True, verbose=False, device=device)
+        try:
+            results = model.track(raw_frame, persist=True, verbose=False, device=device)
+        except Exception:
+            results = []
+            
         intrusion = False
         warning_detected = False
         detections = []
+        highest_conf = 0.0
+        primary_cls_id = None
 
         for r in results:
             if r.boxes is not None:
@@ -247,9 +293,10 @@ while True:
                     
                     track_id = int(box.id[0]) if box.id is not None else 0
 
-                    if cls in [0, 1, 2, 3, 7] and conf > 0.5:  # person, bicycle, car, motorcycle, truck
+                    if cls in [0, 1, 2, 3, 7] and conf >= 0.5:  # Supported objects + threshold>=0.5 applied
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
+                        # Only trigger logic if CENTROID belongs in zone parameters
                         cx = (x1 + x2) // 2
                         cy = (y1 + y2) // 2
 
@@ -264,6 +311,9 @@ while True:
                             zone_label = f"CRITICAL [ID:{track_id}]"
                             zone_color = (0, 0, 255)
                             intrusion = True
+                            if conf > highest_conf:
+                                highest_conf = conf
+                                primary_cls_id = cls
 
                         detections.append((x1, y1, x2, y2, cx, cy, conf, zone_label, zone_color, track_id))
         
@@ -286,41 +336,28 @@ while True:
     latest_stats["warning_count"] = warn_v
     latest_stats["danger_count"] = dang_v
 
-    # Status text (Reduced logging overhead: log every 3 seconds)
-    now = time.time()
-    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    if warning_detected and (now - last_warning_log_time) > 3.0:
-        print(f"{timestamp_str} - Object tracked in WARNING ZONE")
-        last_warning_log_time = now
-
-    if intrusion and (now - last_critical_log_time) > 3.0:
-        print(f"{timestamp_str} - Object tracked in CRITICAL ZONE – INTRUSION DETECTED")
-        last_critical_log_time = now
-
     # Draw zones overlay (vertical lines for Left/Middle/Right mapping)
     frame = raw_frame.copy()
+
+    # Create distinct overlays to render on camera output
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (zone1_end, h), (0, 255, 0), -1)
     cv2.rectangle(overlay, (zone1_end, 0), (zone2_end, h), (0, 255, 255), -1)
     cv2.rectangle(overlay, (zone2_end, 0), (w, h), (0, 0, 255), -1)
     frame = cv2.addWeighted(overlay, 0.15, frame, 0.85, 0)
+    
     cv2.line(frame, (zone1_end, 0), (zone1_end, h), (0, 255, 0), 2)
     cv2.line(frame, (zone2_end, 0), (zone2_end, h), (0, 255, 255), 2)
-    cv2.putText(frame, "SAFE", (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, "WARNING", (zone1_end + 20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-    cv2.putText(frame, "CRITICAL", (zone2_end + 20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(frame, "SAFE", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, "WARNING", (zone1_end + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, "CRITICAL", (zone2_end + 20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+    # Frame With Bounding Boxes + Zone overlays
     for (x1, y1, x2, y2, cx, cy, conf, zone_label, zone_color, track_id) in detections:
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-        cv2.putText(frame, f"Target {conf:.2f}", (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, zone_label, (x1, y2 + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, zone_color, 2)
+        cv2.putText(frame, f"Target {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame, zone_label, (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, zone_color, 2)
                     
     raw_state = "SAFE"
     if intrusion:
@@ -330,38 +367,38 @@ while True:
         
     final_state = zone_state_manager.update(raw_state)
 
-    if final_state == "INTRUSION":
-        cv2.putText(frame, "🚨 INTRUSION DETECTED!", (30, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-    elif final_state == "WARNING":
-        cv2.putText(frame, "WARNING ZONE ACTIVITY", (30, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
-    else:
-        cv2.putText(frame, "SAFE", (30, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
-                    
-    latest_stats["final_state"] = final_state
+    now = time.time()
+    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Stream frame to Flask endpoint globally
-    global_frame = frame.copy()
+    # Only log explicitly when state changes effectively via ZoneStateManager Debounce Logic (Issue 6)
+    if final_state == "WARNING" and (now - last_warning_log_time) > 3.0:
+        write_system_log("WARNING", detections[0][6] if len(detections)>0 else 0.5, "person", "WARNING_ZONE", timestamp_str)
+        last_warning_log_time = now
 
-    # Start evidence capture only when INTRUSION happens AND cooldown passed
     if final_state == "INTRUSION" and (now > cooldown_end_time):
         event_manager.handle_intrusion_event(frame, detections, w, h, list(pre_intrusion_buffer))
         recording = True
         record_end_time = now + 10
         cooldown_end_time = now + 15
 
-        # Update Database Log
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        img_path = f"evidence/intrusion_{timestamp}.jpg"
-        video_path = f"evidence/intrusion_{timestamp}.mp4"
+        c_val = highest_conf if 'highest_conf' in locals() else 1.0
+        cls_v = CLASS_NAMES.get(primary_cls_id, "unknown") if 'primary_cls_id' in locals() else "unknown"
+
+        write_system_log("INTRUSION", c_val, cls_v, "CRITICAL", timestamp_str)
+
+        # Update Database Log with evidence_archive path
+        timestamp_slug = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        img_path = f"evidence_archive/intrusion_{timestamp_slug}.jpg"
+        video_path = f"evidence_archive/intrusion_{timestamp_slug}.mp4"
         
-        cur.execute(
-            "INSERT INTO logs (timestamp, event, zone, image_path, video_path) VALUES (?, ?, ?, ?, ?)",
-            (timestamp, "INTRUSION", "CRITICAL", img_path, video_path)
-        )
-        conn.commit()
+        try:
+            cur.execute(
+                "INSERT INTO logs (timestamp, event, zone, image_path, video_path) VALUES (?, ?, ?, ?, ?)",
+                (timestamp_slug, "INTRUSION", "CRITICAL", img_path, video_path)
+            )
+            conn.commit()
+        except Exception:
+            pass
         
         # Explicit JSON Appending for UI API Fetch
         try:
@@ -371,20 +408,30 @@ while True:
             json_data = []
             
         json_data.insert(0, {
-            "timestamp": timestamp,
-            "event": "INTRUSION DETECTED",
+            "timestamp": timestamp_slug,
+            "event": f"INTRUSION DETECTED ({cls_v.upper()})",
             "zone": "CRITICAL",
             "image_path": img_path,
             "video_path": video_path,
-            "confidence": "HIGH"
+            "confidence": f"{c_val:.2f}"
         })
         
-        with open("intrusion_log.json", "w") as f:
-            json.dump(json_data, f, indent=4)
+        try:
+            with open("intrusion_log.json", "w") as f:
+                json.dump(json_data, f, indent=4)
+        except:
+            pass
             
-        print("🗃️ Log saved to database & JSON (Zone: CRITICAL).")
 
-    # Write video frames
+    if final_state == "INTRUSION":
+        cv2.putText(frame, "🚨 INTRUSION DETECTED!", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+    elif final_state == "WARNING":
+        cv2.putText(frame, "WARNING ZONE ACTIVITY", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
+    else:
+        cv2.putText(frame, "SAFE", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+                    
+    latest_stats["final_state"] = final_state
+
     if recording:
         event_manager.video_queue.put({"type": "FRAME", "frame": frame.copy()})
         if now >= record_end_time:
@@ -392,13 +439,15 @@ while True:
     else:
         pre_intrusion_buffer.append(frame.copy())
 
-    # 2. STORE FRAME FOR DASHBOARD ONLY
+    # Update frame variable for Flask
     latest_frame = frame.copy()
 
     loop_end_time = time.time()
     fps_buffer.append(1.0 / max((loop_end_time - loop_start_time), 0.001))
     latest_stats["fps"] = sum(fps_buffer) / len(fps_buffer)
 
+    # Required for MacOS AVFoundation camera event pumping, ensures no freezing bugs!
+    cv2.waitKey(1)
+
 cap.release()
 conn.close()
-
